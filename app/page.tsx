@@ -129,6 +129,9 @@ export default function Home() {
   const jawBoneRef = useRef<any | null>(null);
   const headBoneRef = useRef<any | null>(null);
   const isSpeakingRef = useRef(false);
+  const spineBonesRef = useRef<any[]>([]);
+  const leftArmBonesRef = useRef<any[]>([]);
+  const rightArmBonesRef = useRef<any[]>([]);
   // morph targets smoothing: target values map
   const morphTargetTargetsRef = useRef<Record<string, number>>({});
   const morphTargetCurrentRef = useRef<Record<string, number>>({});
@@ -198,10 +201,16 @@ export default function Home() {
                   }
                 }
 
-                // collect jaw/head bones if present (common names)
-                const n = (obj.name || "").toLowerCase();
-                if (n.includes("jaw") && !jawBoneRef.current) jawBoneRef.current = obj;
-                if ((n.includes("head") || n.includes("neck")) && !headBoneRef.current) headBoneRef.current = obj;
+                // collect jaw/head/spine/arm bones if present (common names)
+                const name = (obj.name || "").toLowerCase();
+                if (name.includes("jaw") && !jawBoneRef.current) jawBoneRef.current = obj;
+                if ((name.includes("head") || name.includes("neck")) && !headBoneRef.current) headBoneRef.current = obj;
+                if (name.includes("spine") || name.includes("chest") || name.includes("hips")) spineBonesRef.current.push(obj);
+                if (name.includes("shoulder") || name.includes("upperarm") || name.includes("arm") || name.includes("clavicle")) {
+                  if (name.includes("left") || name.endsWith("_l") || name.endsWith(".l")) leftArmBonesRef.current.push(obj);
+                  else if (name.includes("right") || name.endsWith("_r") || name.endsWith(".r")) rightArmBonesRef.current.push(obj);
+                  else { leftArmBonesRef.current.push(obj); rightArmBonesRef.current.push(obj); }
+                }
               });
 
               // Compute bounding box and center/scale the model to fit the view
@@ -233,9 +242,11 @@ export default function Home() {
                 headBoneRef.current.updateWorldMatrix(true, false);
                 headBoneRef.current.getWorldPosition(focusPoint);
               } else {
-                // use bbox center shifted upward a bit toward the head
+                // use bbox center but shift downward so the camera frames the full body (show legs)
                 focusPoint.copy(center);
-                focusPoint.y += size.y * 0.25;
+                // decrease this multiplier to move the model up/down relative to the viewport.
+                // Positive moves focus up (closer to head). Negative moves focus down (shows more legs).
+                focusPoint.y -= size.y * 0.15; // adjust this value (0.05 - 0.25) to fine-tune framing
               }
 
               // Compute world size after scale
@@ -512,7 +523,45 @@ export default function Home() {
     speechSynthesis.speak(utterance);
   };
 
-  // --- Send ---
+  // --- Send with retry/backoff and robust server-error parsing ---
+  const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+  const parseServerError = async (res: Response) => {
+    try {
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const j = await res.json();
+        let msg = j.error || j.message || JSON.stringify(j);
+        // some servers put a stringified JSON in detail
+        if (j.detail) {
+          try {
+            const d = typeof j.detail === "string" ? JSON.parse(j.detail) : j.detail;
+            msg = d.error?.message || d.message || msg;
+          } catch (e) {
+            // ignore parse error, keep original
+          }
+        }
+        return String(msg);
+      }
+      const text = await res.text();
+      try {
+        const parsed = JSON.parse(text);
+        let msg = parsed.error || parsed.message || text;
+        if (parsed.detail) {
+          try {
+            const d = typeof parsed.detail === "string" ? JSON.parse(parsed.detail) : parsed.detail;
+            msg = d.error?.message || d.message || msg;
+          } catch {}
+        }
+        return String(msg);
+      } catch {
+        return text;
+      }
+    } catch (e) {
+      return String(e);
+    }
+  };
+
   const send = async (overrideInput?: string) => {
     const messageToSend = overrideInput ?? input;
     if (!messageToSend) return;
@@ -521,100 +570,130 @@ export default function Home() {
     const charMsgId = (Date.now() + 1).toString();
 
     setMessages((prev) => [...prev, userMsg, { id: charMsgId, role: "character", text: "", isStreaming: true }]);
-    setInput(""); setLoading(true);
+    setInput("");
+    setLoading(true);
 
     const history = messages.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }));
 
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: messageToSend, characterId, history, speech: false }),
-      });
+    const maxRetries = 3;
+    let attempt = 0;
+    const delays = [1000, 2000, 4000];
 
-      if (!res.ok) {
-        const text = await res.text();
-        setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Server error: ${text}`, isStreaming: false } : m));
-        setLoading(false); return;
+    while (attempt <= maxRetries) {
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: messageToSend, characterId, history, speech: false }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const generatedText = data?.text || "Error: No text in response.";
+          setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: generatedText, isStreaming: false } : m));
+          speakText(generatedText);
+          setLoading(false);
+          return;
+        }
+
+        const serverMsg = await parseServerError(res);
+
+        // If model is overloaded (503) we retry with backoff
+        if (res.status === 503 && attempt < maxRetries) {
+          const nextAttempt = attempt + 1;
+          setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Server busy — retrying (${nextAttempt}/${maxRetries})...`, isStreaming: true } : m));
+          await sleep(delays[attempt] ?? 2000);
+          attempt = nextAttempt;
+          continue; // retry
+        }
+
+        // Non-retriable or out of retries: surface error
+        setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Server error: ${serverMsg}`, isStreaming: false } : m));
+        // Provide a spoken fallback so the experience isn't silent
+        speakText("Sorry, I'm having trouble right now. Please try again in a moment.");
+        setLoading(false);
+        return;
+      } catch (err) {
+        console.error("Network/send error:", err);
+        if (attempt < maxRetries) {
+          const nextAttempt = attempt + 1;
+          setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Network error — retrying (${nextAttempt}/${maxRetries})...`, isStreaming: true } : m));
+          await sleep(delays[attempt] ?? 2000);
+          attempt = nextAttempt;
+          continue;
+        }
+        setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: "Error contacting server.", isStreaming: false } : m));
+        speakText("Sorry, I couldn't reach the server. Please check your connection and try again.");
+        setLoading(false);
+        return;
       }
+    }
 
-      const data = await res.json();
-      const generatedText = data?.text || "Error: No text in response.";
-
-      setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: generatedText, isStreaming: false } : m));
-
-      speakText(generatedText);
-    } catch (err) {
-      console.error(err);
-      setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: "Error contacting server.", isStreaming: false } : m));
-    } finally { setLoading(false); }
+    // if we exit loop unexpectedly
+    setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: "Unexpected error.", isStreaming: false } : m));
+    setLoading(false);
   };
 
   return (
-    <main style={{ maxWidth: 720, margin: "2rem auto", padding: "0 1rem" }}>
-      <h1>BookTalk — Chat with a Character</h1>
+    <main style={{ width: "100vw", height: "100vh", margin: 0, padding: 0, overflow: "hidden", position: "relative" }}>
+      {/* Large Avatar area (full screen) */}
+      <div ref={mountRef} style={{ width: "100%", height: "100%", position: "absolute", inset: 0 }} />
 
-      {/* Character Selector */}
-      <div style={{ margin: "0.5rem 0 1.5rem 0" }}>
-        <label htmlFor="character" style={{ marginRight: 8, fontWeight: 600 }}>Choose Character:</label>
-        <select
-          id="character"
-          value={characterId}
-          onChange={(e) => { setCharacterId(e.target.value); setMessages([]); setInput(""); setLoading(false); }}
-          disabled={loading}
-        >
-          {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-      </div>
+      {/* Small overlay UI for chat and controls prioritized to character */}
+      <div style={{ position: "absolute", right: 20, bottom: 20, width: 360, maxHeight: "70vh", background: "rgba(1, 0, 0, 0.85)", borderRadius: 12, padding: 12, boxShadow: "0 6px 20px rgba(0,0,0,0.25)", overflow: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <strong>BookTalk</strong>
+          <select
+            value={characterId}
+            onChange={(e) => { setCharacterId(e.target.value); setMessages([]); setInput(""); setLoading(false); }}
+            disabled={loading}
+          >
+            {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
 
-      {/* 3D Avatar */}
-      <div ref={mountRef} style={{ width: "400px", height: "400px", margin: "1rem auto", border: "1px solid #ccc" }} />
-
-      {/* Model loading / error / morph controls */}
-      <div style={{ textAlign: "center", marginTop: 8 }}>
         {modelLoading && <div style={{ color: "#666" }}>Loading 3D model...</div>}
         {modelError && <div style={{ color: "#b00" }}>{modelError}</div>}
-        {!modelLoading && !modelError && morphTargets.length > 0 && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Morph Targets (expressions)</strong>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch", marginTop: 6 }}>
-              {morphTargets.map((name) => (
-                <label key={name} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ minWidth: 120, textAlign: "left" }}>{name}</span>
-                  <input type="range" min={0} max={1} step={0.01} defaultValue={0}
-                    onChange={(e) => setMorphValue(name, Number((e.target as HTMLInputElement).value))} />
-                </label>
-              ))}
+
+        <div className="chat-container" style={{ background: "transparent", border: "none", padding: 0 }}>
+          {messages.map((m) => (
+            <div key={m.id} className={`message ${m.role}`}>
+              <div className="messageInner">
+                <strong className="messageLabel">
+                  {m.role === "user" ? "You" : characters.find((c) => c.id === characterId)?.name || "Character"}
+                </strong>
+                <div>{m.text}</div>
+              </div>
             </div>
+          ))}
+        </div>
+
+        <div className="chat-controls" style={{ marginTop: 8, display: "flex", gap: 8 }}>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && send()}
+            disabled={loading}
+            placeholder={`Talk to ${characters.find((c) => c.id === characterId)?.name || "the character"}...`}
+            style={{ flex: 1 }}
+          />
+          <button onClick={() => send()} disabled={loading || !input}>Send</button>
+          <button onClick={startVoiceInput} disabled={loading}>🎤</button>
+        </div>
+
+        {/* Morph sliders (if any) */}
+        {!modelLoading && !modelError && morphTargets.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <strong style={{ display: "block", marginBottom: 6 }}>Expressions</strong>
+            {morphTargets.map((name) => (
+              <label key={name} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                <span style={{ minWidth: 100 }}>{name}</span>
+                <input type="range" min={0} max={1} step={0.01} defaultValue={0}
+                  onChange={(e) => setMorphValue(name, Number((e.target as HTMLInputElement).value))} />
+              </label>
+            ))}
           </div>
         )}
-      </div>
-
-      {/* Chat Messages */}
-      <div className="chat-container">
-        {messages.map((m) => (
-          <div key={m.id} className={`message ${m.role}`}>
-            <div className="messageInner">
-              <strong className="messageLabel">
-                {m.role === "user" ? "You" : characters.find((c) => c.id === characterId)?.name || "Character"}
-              </strong>
-              <div>{m.text}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Input Controls */}
-      <div className="chat-controls">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          disabled={loading}
-          placeholder={`Talk to ${characters.find((c) => c.id === characterId)?.name || "the character"}...`}
-        />
-        <button onClick={() => send()} disabled={loading || !input}>Send</button>
-        <button onClick={startVoiceInput} disabled={loading}>🎤</button>
       </div>
     </main>
   );
