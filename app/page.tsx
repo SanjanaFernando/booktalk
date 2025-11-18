@@ -1,6 +1,7 @@
 "use client";
+import Sherlock from "../app/assests/sherlock.jpg";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 
 // Message type
 type Message = {
@@ -10,7 +11,7 @@ type Message = {
   isStreaming?: boolean;
 };
 
-// --- Gemini TTS Utility Functions ---
+// --- Gemini TTS Utility Functions (Kept outside component for clarity) ---
 
 /**
  * Converts a base64 encoded string to an ArrayBuffer.
@@ -29,7 +30,6 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 
 /**
  * Converts raw 16-bit PCM data (signed integers) into a playable WAV Blob.
- * The Gemini TTS API returns raw PCM data in the specified mimeType (e.g., audio/L16;rate=24000).
  * @param pcmData Int16Array of the raw audio data.
  * @param sampleRate The sample rate (e.g., 24000).
  * @returns A Blob containing the WAV file.
@@ -78,7 +78,7 @@ function pcmToWav(pcmData: Int16Array, sampleRate: number): Blob {
   writeUint32(pcmData.byteLength); // data size
 
   // Write PCM data
-  let dataOffset = offset;
+  const dataOffset = offset;
   for (let i = 0; i < pcmData.length; i++) {
     view.setInt16(dataOffset + i * 2, pcmData[i], true);
   }
@@ -86,22 +86,115 @@ function pcmToWav(pcmData: Int16Array, sampleRate: number): Blob {
   return new Blob([view], { type: "audio/wav" });
 }
 
+// --- Character Display Component (Using Images) ---
+
+interface CharacterDisplayProps {
+  characterId: string;
+  name: string;
+  imageUrl: string;
+  isSpeaking: boolean;
+}
+
+const CharacterDisplay: React.FC<CharacterDisplayProps> = ({
+  characterId,
+  name,
+  imageUrl,
+  isSpeaking,
+}) => {
+  return (
+    <div className="flex flex-col items-center justify-center p-4 bg-white rounded-xl shadow-2xl mb-4 w-full max-w-sm">
+      <div className="relative w-32 h-32 rounded-full overflow-hidden border-4 border-gray-200 shadow-lg">
+        {/* Character Image */}
+        <img
+          src={imageUrl}
+          alt={`${name} Portrait`}
+          className="w-full h-full object-cover"
+          onError={(e) => {
+            // Fallback if the placeholder image fails to load
+            (
+              e.target as HTMLImageElement
+            ).src = `https://placehold.co/150x150/CCCCCC/000000?text=${name}`;
+          }}
+        />
+
+        {/* Mouth Overlay for Lip Sync Animation */}
+        <div
+          id="mouth-overlay"
+          className={`
+            absolute left-1/2 -translate-x-1/2 top-[65%]
+            w-[25%] h-[8%] rounded-sm
+            ${
+              isSpeaking
+                ? "bg-red-500 animate-mouth-img opacity-80"
+                : "bg-transparent"
+            }
+            transition-all duration-100
+          `}
+        ></div>
+      </div>
+
+      <h2 className="mt-3 text-2xl font-extrabold text-gray-800">{name}</h2>
+      <p
+        className={`text-sm ${
+          isSpeaking ? "text-blue-600 font-semibold" : "text-gray-500"
+        }`}
+      >
+        {isSpeaking ? "🗣️ Speaking..." : "...Awaiting Query..."}
+      </p>
+    </div>
+  );
+};
+
+// --- Main Chat Component ---
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [characterId, setCharacterId] = useState<string>("sherlock");
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
-  // Character definitions matching the server's voice mapping
-  const characters = [
-    { id: "sherlock", name: "Sherlock Holmes", voice: "Alnilum" },
-    { id: "harry", name: "Harry Potter", voice: "Leda" },
-    { id: "snape", name: "Professor Snape", voice: "algenib" },
-    { id: "dumbledore", name: "Albus Dumbledore", voice: "Charon" },
-  ];
+  // Character definitions with image placeholders and unique TTS voices
+  const characters = useMemo(
+    () => [
+      {
+        id: "sherlock",
+        name: "Sherlock Holmes",
+        image_url: Sherlock.src,
+        tts_voice: "Kore",
+      },
+      {
+        id: "harry",
+        name: "Harry Potter",
+        image_url:
+          "https://placehold.co/150x150/7A0033/F0F8FF?text=Harry+Potter",
+        tts_voice: "Leda",
+      },
+      {
+        id: "snape",
+        name: "Professor Snape",
+        image_url:
+          "https://placehold.co/150x150/2C2C2C/F0F8FF?text=Severus+Snape",
+        tts_voice: "Charon",
+      },
+      {
+        id: "dumbledore",
+        name: "Albus Dumbledore",
+        image_url:
+          "https://placehold.co/150x150/993366/F0F8FF?text=Albus+Dumbledore",
+        tts_voice: "Gacrux",
+      },
+    ],
+    []
+  );
+
+  const selectedCharacter = useMemo(
+    () => characters.find((c) => c.id === characterId) || characters[0],
+    [characterId, characters]
+  );
 
   async function send() {
-    if (!input) return;
+    if (!input || isSpeaking) return;
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -126,10 +219,6 @@ export default function Home() {
       content: m.text,
     }));
 
-    // Get selected voice from the dropdown (used by server for Gemini TTS)
-    const selectedVoice =
-      characters.find((c) => c.id === characterId)?.voice || "Kore";
-
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -137,9 +226,9 @@ export default function Home() {
         body: JSON.stringify({
           prompt: messageToSend,
           characterId,
+          ttsVoice: selectedCharacter.tts_voice, // Pass the selected voice
           history,
-          speech: true, // ask server to return Gemini TTS audio
-          voice: selectedVoice,
+          speech: true,
         }),
       });
 
@@ -156,7 +245,6 @@ export default function Home() {
         return;
       }
 
-      // --- NEW LOGIC: Expecting JSON response with Base64 audio data ---
       const data = await res.json();
       const generatedText = data?.text || "Error: No text in response.";
 
@@ -172,23 +260,27 @@ export default function Home() {
       // Process and play audio if included in the JSON response
       if (data.audioData && data.sampleRate) {
         try {
-          // 1. Convert base64 string to ArrayBuffer
           const pcmBuffer = base64ToArrayBuffer(data.audioData);
-          // 2. The API returns signed 16-bit PCM. Create Int16Array view.
           const pcm16 = new Int16Array(pcmBuffer);
-          // 3. Convert raw PCM to a playable WAV Blob
           const wavBlob = pcmToWav(pcm16, data.sampleRate);
-          // 4. Create object URL and play
           const audioUrl = URL.createObjectURL(wavBlob);
           const audio = new Audio(audioUrl);
 
+          // Start speaking animation and play audio
           audio.play().catch((e) => console.warn("Audio play prevented:", e));
+          setIsSpeaking(true);
 
-          // Clean up the object URL after audio finishes
-          audio.onended = () => URL.revokeObjectURL(audioUrl);
+          // Clean up the object URL and stop speaking animation after audio finishes
+          audio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            setIsSpeaking(false);
+          };
         } catch (audioErr) {
           console.error("Error processing audio data:", audioErr);
+          setIsSpeaking(false);
         }
+      } else {
+        setIsSpeaking(false);
       }
     } catch (err) {
       console.error(err);
@@ -207,11 +299,14 @@ export default function Home() {
   return (
     <main
       style={{ maxWidth: 720, margin: "2rem auto", padding: "0 1rem" }}
-      className="font-sans"
+      className="font-sans flex flex-col items-center bg-gray-50 min-h-screen rounded-xl shadow-inner"
     >
+      {/* Tailwind is provided via PostCSS (see postcss.config.mjs and tailwind.config.mjs) —
+      removed synchronous CDN script to avoid Next.js 'no-sync-scripts' warning. */}
       <style jsx global>{`
+        /* General Styling */
         body {
-          background: #f7f7f7;
+          background: #f0f4f8;
           color: #333;
         }
         .font-sans {
@@ -224,6 +319,8 @@ export default function Home() {
           border-bottom: 2px solid #ddd;
           padding-bottom: 0.5rem;
           margin-bottom: 1.5rem;
+          text-align: center;
+          width: 100%;
         }
         .chat-container {
           display: flex;
@@ -233,13 +330,15 @@ export default function Home() {
           border: 1px solid #e2e8f0;
           border-radius: 0.75rem;
           background: white;
-          min-height: 400px;
-          max-height: 60vh;
+          min-height: 350px;
+          max-height: 40vh;
           overflow-y: auto;
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-            0 2px 4px -2px rgba(0, 0, 0, 0.06);
+          box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
+          width: 100%;
           margin-bottom: 1rem;
         }
+
+        /* Message Styling (kept concise) */
         .message {
           display: flex;
         }
@@ -250,19 +349,19 @@ export default function Home() {
           justify-content: flex-start;
         }
         .messageInner {
-          max-width: 80%;
+          max-width: 85%;
           padding: 0.75rem 1rem;
           border-radius: 1.25rem;
           box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
           line-height: 1.5;
         }
         .user .messageInner {
-          background-color: #3b82f6; /* Blue */
+          background-color: #3b82f6;
           color: white;
           border-bottom-right-radius: 0.25rem;
         }
         .character .messageInner {
-          background-color: #e2e8f0; /* Light Gray */
+          background-color: #e2e8f0;
           color: #1a202c;
           border-bottom-left-radius: 0.25rem;
         }
@@ -279,6 +378,8 @@ export default function Home() {
         .character .messageLabel {
           color: #4a5568;
         }
+
+        /* Streaming Cursor */
         .streaming-cursor {
           display: inline-block;
           animation: blink 1s step-end infinite;
@@ -293,9 +394,30 @@ export default function Home() {
             opacity: 0;
           }
         }
+
+        /* Image Lip Sync Animation Keyframes */
+        /* Applied to the small red overlay div */
+        @keyframes mouth-move-img {
+          0%,
+          100% {
+            transform: translate(-50%, 0) scaleX(1) scaleY(0.8); /* Neutral/Closed */
+            opacity: 0.7;
+          }
+          50% {
+            transform: translate(-50%, 5%) scaleX(1.3) scaleY(1.4); /* Open/Vowel sound - moves down slightly */
+            opacity: 1;
+            background-color: #ef4444; /* Brighter red when open */
+          }
+        }
+        .animate-mouth-img {
+          animation: mouth-move-img 0.1s infinite alternate ease-in-out; /* Fast cycle for speech simulation */
+        }
+
+        /* Controls */
         .chat-controls {
           display: flex;
           gap: 0.5rem;
+          width: 100%;
         }
         .chat-controls input {
           flex-grow: 1;
@@ -311,7 +433,7 @@ export default function Home() {
         }
         .chat-controls button {
           padding: 0.75rem 1.5rem;
-          background-color: #10b981; /* Emerald Green */
+          background-color: #10b981;
           color: white;
           border: none;
           border-radius: 0.5rem;
@@ -333,15 +455,20 @@ export default function Home() {
         }
       `}</style>
 
-      <h1>BookTalk — Chat with a Character</h1>
+      <h1 className="w-full">BookTalk — Image-Synced Character AI</h1>
 
-      {/* Character Selector */}
-      <div style={{ margin: "0.5rem 0 1.5rem 0" }}>
-        <label
-          htmlFor="character"
-          style={{ marginRight: 8, fontWeight: "600" }}
-        >
-          Choose Character:
+      {/* Character Face/Avatar - Centered and Animated */}
+      <CharacterDisplay
+        characterId={characterId}
+        name={selectedCharacter.name}
+        imageUrl={selectedCharacter.image_url}
+        isSpeaking={isSpeaking}
+      />
+
+      {/* Character Selector - Centered */}
+      <div className="mb-4 text-center">
+        <label htmlFor="character" className="mr-2 font-semibold">
+          Change Character:
         </label>
         <select
           id="character"
@@ -353,8 +480,9 @@ export default function Home() {
             setMessages([]);
             setInput("");
             setLoading(false);
+            setIsSpeaking(false);
           }}
-          disabled={loading}
+          disabled={loading || isSpeaking}
         >
           {characters.map((c) => (
             <option key={c.id} value={c.id}>
@@ -370,10 +498,7 @@ export default function Home() {
           <div key={m.id} className={`message ${m.role}`}>
             <div className="messageInner">
               <strong className="messageLabel">
-                {m.role === "user"
-                  ? "You"
-                  : characters.find((c) => c.id === characterId)?.name ||
-                    "Character"}
+                {m.role === "user" ? "You" : selectedCharacter.name}
               </strong>
               <div>
                 {m.text}
@@ -382,15 +507,9 @@ export default function Home() {
             </div>
           </div>
         ))}
-        {loading && !messages.some((m) => m.isStreaming) && (
-          <div
-            style={{
-              opacity: 0.7,
-              fontStyle: "italic",
-              padding: "0.75rem 1rem",
-            }}
-          >
-            Thinking...
+        {(loading || isSpeaking) && !messages.some((m) => m.isStreaming) && (
+          <div className="opacity-70 italic p-3">
+            {isSpeaking ? "Waiting for voice playback..." : "Thinking..."}
           </div>
         )}
       </div>
@@ -401,13 +520,10 @@ export default function Home() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
-          disabled={loading}
-          placeholder={`Talk to ${
-            characters.find((c) => c.id === characterId)?.name ||
-            "the character"
-          }...`}
+          disabled={loading || isSpeaking}
+          placeholder={`Ask ${selectedCharacter.name} a question...`}
         />
-        <button onClick={send} disabled={loading || !input}>
+        <button onClick={send} disabled={loading || !input || isSpeaking}>
           Send
         </button>
       </div>
