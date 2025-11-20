@@ -26,10 +26,10 @@ const GEMINI_VOICES: Record<string, string> = {
 };
 
 const PERSONAS: Record<string, string> = {
-  sherlock: `You are **Sherlock Holmes**, the consulting detective. Adopt a **formal, deductive, Victorian** tone. STRICT CONSTRAINT: Your knowledge is strictly limited to 1914. For any post-1914 topic, you must refuse by stating it transpired since your retirement to the Sussex downs. RESPONSE LENGTH: All replies must be 240 characters maximum.`,
-  harry: `You are **Harry Potter**. Be friendly, courageous, and youthful. Speak with warmth, referencing the wizarding world (Hogwarts, Quidditch, friends, etc.). RESPONSE LENGTH: All replies must be 240 characters maximum.`,
-  snape: `You are **Professor Severus Snape**. Be stern, dry, and sarcastic. Use curt, precise language, focusing on Potions and Hogwarts lore. Show disdain for incompetence. RESPONSE LENGTH: All replies must be 240 characters maximum.`,
-  dumbledore: `You are **Albus Dumbledore**. Be wise, warm, and whimsical. Speak with gentle authority and include wise, slightly cryptic aphorisms about choices and human nature. RESPONSE LENGTH: All replies must be 240 characters maximum.`,
+  sherlock: `You are **Sherlock Holmes**, the consulting detective. Adopt a **formal, deductive, Victorian** tone. STRICT CONSTRAINT: Your knowledge is strictly limited to 1914. For any post-1914 topic, you must refuse by stating it transpired since your retirement to the Sussex downs. RESPONSE LENGTH: All replies must be 140 characters maximum.`,
+  harry: `You are **Harry Potter**. Be friendly, courageous, and youthful. Speak with warmth, referencing the wizarding world (Hogwarts, Quidditch, friends, etc.). RESPONSE LENGTH: All replies must be 140 characters maximum.`,
+  snape: `You are **Professor Severus Snape**. Be stern, dry, and sarcastic. Use curt, precise language, focusing on Potions and Hogwarts lore. Show disdain for incompetence. RESPONSE LENGTH: All replies must be 140 characters maximum.`,
+  dumbledore: `You are **Albus Dumbledore**. Be wise, warm, and whimsical. Speak with gentle authority and include wise, slightly cryptic aphorisms about choices and human nature. RESPONSE LENGTH: All replies must be 140 characters maximum.`,
 };
 
 /**
@@ -44,15 +44,26 @@ export async function POST(req: Request) {
         const raw = fs.readFileSync(credPath, "utf8");
         try {
           const json = JSON.parse(raw);
-          console.log("Using service account:", json.client_email ?? "(no client_email in key)");
+          console.log(
+            "Using service account:",
+            json.client_email ?? "(no client_email in key)"
+          );
         } catch {
-          console.log("GOOGLE_APPLICATION_CREDENTIALS file exists but could not be parsed as JSON:", credPath);
+          console.log(
+            "GOOGLE_APPLICATION_CREDENTIALS file exists but could not be parsed as JSON:",
+            credPath
+          );
         }
       } else if (!process.env.GEMINI_API_KEY) {
-        console.log("No GEMINI_API_KEY and no GOOGLE_APPLICATION_CREDENTIALS set — requests will likely fail.");
+        console.log(
+          "No GEMINI_API_KEY and no GOOGLE_APPLICATION_CREDENTIALS set — requests will likely fail."
+        );
       }
     } catch (e) {
-      console.warn("Could not read GOOGLE_APPLICATION_CREDENTIALS file:", (e as Error).message);
+      console.warn(
+        "Could not read GOOGLE_APPLICATION_CREDENTIALS file:",
+        (e as Error).message
+      );
     }
 
     const body = await req.json();
@@ -98,7 +109,8 @@ export async function POST(req: Request) {
     chatMessages.push({ role: "system", content: persona });
     for (const h of history) {
       const role = h.role === "user" ? "user" : "assistant";
-      const content = typeof h.content === "string" ? h.content : String(h.content ?? "");
+      const content =
+        typeof h.content === "string" ? h.content : String(h.content ?? "");
       chatMessages.push({ role, content });
     }
     chatMessages.push({ role: "user", content: prompt });
@@ -117,7 +129,11 @@ export async function POST(req: Request) {
         });
       } else if (anyAi.models?.text?.generate) {
         // Some SDK versions provide a text.generate surface that accepts a single input string.
-        const inputText = [persona, ...history.map((h: any) => String(h.content ?? "")), prompt].join("\n");
+        const inputText = [
+          persona,
+          ...history.map((h: any) => String(h.content ?? "")),
+          prompt,
+        ].join("\n");
         textResponse = await anyAi.models.text.generate({
           model: textModel,
           input: inputText,
@@ -133,14 +149,22 @@ export async function POST(req: Request) {
         });
       } else if (anyAi.models?.generate) {
         // Generic fallback - try generate with prompt
-        textResponse = await anyAi.models.generate({ model: textModel, input: prompt });
+        textResponse = await anyAi.models.generate({
+          model: textModel,
+          input: prompt,
+        });
       } else {
-        throw new Error("No supported generate method found on @google/genai client. Please check installed SDK version.");
+        throw new Error(
+          "No supported generate method found on @google/genai client. Please check installed SDK version."
+        );
       }
     } catch (err) {
       console.error("[GEMINI_ERROR] text generation failed:", err);
       const message = (err as any)?.message ?? String(err);
-      return NextResponse.json({ error: "Model generation failed", detail: message }, { status: 500 });
+      return NextResponse.json(
+        { error: "Model generation failed", detail: message },
+        { status: 500 }
+      );
     }
 
     // 2) Process text and enforce character limit
@@ -178,25 +202,44 @@ export async function POST(req: Request) {
           });
         } catch (e) {
           console.error("[GEMINI_TTS_EXCEPTION - text.generate]", e);
-          return NextResponse.json({ error: `TTS failed: ${(e as Error).message}`, text }, { status: 500 });
+          return NextResponse.json(
+            { error: `TTS failed: ${(e as Error).message}`, text },
+            { status: 500 }
+          );
         }
 
         // Attempt to extract audio from common response shapes.
         const candidatePart =
-          ttsResponse?.output?.[0]?.content?.find((c: any) => c.type === "audio") ||
+          ttsResponse?.output?.[0]?.content?.find(
+            (c: any) => c.type === "audio"
+          ) ||
           ttsResponse?.candidates?.[0]?.content?.parts?.[0] ||
           null;
 
-        const audioData = candidatePart?.inlineData?.data || candidatePart?.data || null;
-        const mimeType = candidatePart?.inlineData?.mimeType || candidatePart?.mimeType || "audio/L16;rate=24000";
+        const audioData =
+          candidatePart?.inlineData?.data || candidatePart?.data || null;
+        const mimeType =
+          candidatePart?.inlineData?.mimeType ||
+          candidatePart?.mimeType ||
+          "audio/L16;rate=24000";
 
-        if (audioData && typeof audioData === "string" && mimeType && mimeType.startsWith("audio/")) {
+        if (
+          audioData &&
+          typeof audioData === "string" &&
+          mimeType &&
+          mimeType.startsWith("audio/")
+        ) {
           const rateMatch = mimeType.match(/rate=(\d+)/);
           const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-          return NextResponse.json({ text, audioData, sampleRate }, { status: 200 });
+          return NextResponse.json(
+            { text, audioData, sampleRate },
+            { status: 200 }
+          );
         }
 
-        console.error("[GEMINI_TTS_ERROR] TTS response missing audio data or different shape.");
+        console.error(
+          "[GEMINI_TTS_ERROR] TTS response missing audio data or different shape."
+        );
       } catch (e) {
         console.error("[GEMINI_TTS_EXCEPTION]", e);
         // Fallback to just returning text if TTS fails

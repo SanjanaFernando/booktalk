@@ -63,7 +63,7 @@ export default function Home() {
 
   const characters = [
     { id: "sherlock", name: "Sherlock Holmes" },
-    { id: "harry", name: "Harry Potter" },
+    { id: "harrypotter", name: "Harry Potter" },
     { id: "snape", name: "Professor Snape" },
     { id: "dumbledore", name: "Albus Dumbledore" },
   ];
@@ -73,7 +73,8 @@ export default function Home() {
   const [isListening, setIsListening] = useState(false);
 
   useEffect(() => {
-    const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognitionClass =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionClass) {
       recognitionRef.current = null;
       return;
@@ -104,7 +105,9 @@ export default function Home() {
     recognitionRef.current = recognition;
 
     return () => {
-      try { recognition.stop(); } catch {}
+      try {
+        recognition.stop();
+      } catch {}
       recognitionRef.current = null;
     };
   }, []);
@@ -115,8 +118,13 @@ export default function Home() {
       alert("Speech Recognition not supported in this browser.");
       return;
     }
-    if (isListening) { recognition.stop(); setIsListening(false); return; }
-    recognition.start(); setIsListening(true);
+    if (isListening) {
+      recognition.stop();
+      setIsListening(false);
+      return;
+    }
+    recognition.start();
+    setIsListening(true);
   };
 
   // --- Three.js Avatar Setup ---
@@ -152,7 +160,15 @@ export default function Home() {
     renderer.setSize(width, height);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    mountRef.current.appendChild(renderer.domElement);
+    // Append canvas hidden and fade it in for smooth model swaps
+    if (mountRef.current) {
+      renderer.domElement.style.opacity = "0";
+      renderer.domElement.style.transition = "opacity 400ms ease";
+      mountRef.current.appendChild(renderer.domElement);
+      requestAnimationFrame(() => {
+        renderer.domElement.style.opacity = "1";
+      });
+    }
 
     // Lights: ambient + directional for nice shading and shadows
     const ambient = new THREE.AmbientLight(0xffffff, 0.6);
@@ -168,15 +184,20 @@ export default function Home() {
     scene.add(dir);
 
     const loader = new GLTFLoader();
-    // Support both possible filenames: 'sherlock.glb' and 'sherlock.glb.glb' (some exports include double extension).
-    const candidateUrls = ["/models/sherlock.glb", "/models/sherlock.glb.glb"];
+    // Support both possible filenames for the selected character id
+    const candidateUrls = [
+      `/models/${characterId}.glb`,
+      `/models/${characterId}.glb.glb`,
+    ];
     setModelLoading(true);
 
     // Try each candidate URL until one is found and successfully loaded.
     let tried = 0;
     const tryNext = () => {
       if (tried >= candidateUrls.length) {
-        setModelError("Model file not found. Place your .glb at public/models/sherlock.glb");
+        setModelError(
+          "Model file not found. Place your .glb at public/models/sherlock.glb"
+        );
         setModelLoading(false);
         return;
       }
@@ -191,8 +212,25 @@ export default function Home() {
               avatarRef.current = gltf.scene;
 
               // Enable shadows and collect morph target meshes
+              // Also hide any meshes/bones that look like hands/fingers/thumbs
               morphMeshesRef.current = [];
               gltf.scene.traverse((obj: any) => {
+                const name = (obj.name || "").toLowerCase();
+
+                // If a mesh looks like a hand or finger, hide it so the avatar has no hands
+                if (
+                  obj.isMesh &&
+                  (name.includes("hand") ||
+                    name.includes("finger") ||
+                    name.includes("thumb") ||
+                    name.includes("palm"))
+                ) {
+                  obj.visible = false;
+                  obj.castShadow = false;
+                  obj.receiveShadow = false;
+                  return; // skip further collection for hidden hand meshes
+                }
+
                 if (obj.isMesh) {
                   obj.castShadow = true;
                   obj.receiveShadow = true;
@@ -202,14 +240,54 @@ export default function Home() {
                 }
 
                 // collect jaw/head/spine/arm bones if present (common names)
-                const name = (obj.name || "").toLowerCase();
-                if (name.includes("jaw") && !jawBoneRef.current) jawBoneRef.current = obj;
-                if ((name.includes("head") || name.includes("neck")) && !headBoneRef.current) headBoneRef.current = obj;
-                if (name.includes("spine") || name.includes("chest") || name.includes("hips")) spineBonesRef.current.push(obj);
-                if (name.includes("shoulder") || name.includes("upperarm") || name.includes("arm") || name.includes("clavicle")) {
-                  if (name.includes("left") || name.endsWith("_l") || name.endsWith(".l")) leftArmBonesRef.current.push(obj);
-                  else if (name.includes("right") || name.endsWith("_r") || name.endsWith(".r")) rightArmBonesRef.current.push(obj);
-                  else { leftArmBonesRef.current.push(obj); rightArmBonesRef.current.push(obj); }
+                if (name.includes("jaw") && !jawBoneRef.current)
+                  jawBoneRef.current = obj;
+                if (
+                  (name.includes("head") || name.includes("neck")) &&
+                  !headBoneRef.current
+                )
+                  headBoneRef.current = obj;
+                if (
+                  name.includes("spine") ||
+                  name.includes("chest") ||
+                  name.includes("hips")
+                )
+                  spineBonesRef.current.push(obj);
+
+                // collect arm bones but avoid collecting hand/finger bones
+                if (
+                  name.includes("shoulder") ||
+                  name.includes("upperarm") ||
+                  name.includes("arm") ||
+                  name.includes("clavicle")
+                ) {
+                  if (
+                    name.includes("left") ||
+                    name.endsWith("_l") ||
+                    name.endsWith(".l")
+                  )
+                    leftArmBonesRef.current.push(obj);
+                  else if (
+                    name.includes("right") ||
+                    name.endsWith("_r") ||
+                    name.endsWith(".r")
+                  )
+                    rightArmBonesRef.current.push(obj);
+                  else {
+                    leftArmBonesRef.current.push(obj);
+                    rightArmBonesRef.current.push(obj);
+                  }
+                }
+
+                // If a bone looks like a hand/finger, hide it too (keep skeletal transforms but don't render children meshes)
+                if (
+                  (obj.type === "Bone" || obj.type === "Object3D") &&
+                  (name.includes("hand") ||
+                    name.includes("finger") ||
+                    name.includes("thumb") ||
+                    name.includes("palm"))
+                ) {
+                  obj.visible = false;
                 }
               });
 
@@ -253,8 +331,16 @@ export default function Home() {
               const worldMax = Math.max(size.x, size.y, size.z) * scaleFactor;
 
               // Place camera in front of the face at a distance proportional to model size
-              const camOffset = new THREE.Vector3(0, worldMax * 0.12, worldMax * 1.0);
-              const camPos = new THREE.Vector3().copy(focusPoint).add(camOffset);
+              // Apply a zoom multiplier <1 to move camera closer (zoom in). Tweak this value to adjust framing.
+              const zoomMultiplier = 0.6; // values <1 zoom in, >1 zoom out
+              const camOffset = new THREE.Vector3(
+                0,
+                worldMax * 0.12 * zoomMultiplier,
+                worldMax * 1.0 * zoomMultiplier
+              );
+              const camPos = new THREE.Vector3()
+                .copy(focusPoint)
+                .add(camOffset);
               camera.position.copy(camPos);
               camera.lookAt(focusPoint);
 
@@ -272,7 +358,8 @@ export default function Home() {
               // Initialize influences to 0
               for (const m of morphMeshesRef.current) {
                 if (m.morphTargetInfluences) {
-                  for (let i = 0; i < m.morphTargetInfluences.length; i++) m.morphTargetInfluences[i] = 0;
+                  for (let i = 0; i < m.morphTargetInfluences.length; i++)
+                    m.morphTargetInfluences[i] = 0;
                 }
               }
 
@@ -301,10 +388,14 @@ export default function Home() {
 
       // smooth morph targets toward target values
       for (const m of morphMeshesRef.current) {
-        const dict = m.morphTargetDictionary as Record<string, number> | undefined;
+        const dict = m.morphTargetDictionary as
+          | Record<string, number>
+          | undefined;
         const infl = m.morphTargetInfluences as number[] | undefined;
         if (!dict || !infl) continue;
-        for (const [name, targetVal] of Object.entries(morphTargetTargetsRef.current)) {
+        for (const [name, targetVal] of Object.entries(
+          morphTargetTargetsRef.current
+        )) {
           const idx = dict[name];
           if (typeof idx === "number") {
             const cur = infl[idx] ?? 0;
@@ -347,15 +438,40 @@ export default function Home() {
 
     return () => {
       window.removeEventListener("resize", onResize);
-      renderer.dispose();
-      try { mountRef.current?.removeChild(renderer.domElement); } catch {}
+
+      // Fade out canvas before removing to make swaps smooth
+      try {
+        const dom = renderer.domElement;
+        if (dom && dom.parentElement) {
+          dom.style.transition = "opacity 400ms ease";
+          dom.style.opacity = "0";
+          setTimeout(() => {
+            try {
+              dom.parentElement?.removeChild(dom);
+            } catch {}
+            try {
+              renderer.dispose();
+            } catch {}
+          }, 420);
+        } else {
+          try {
+            renderer.dispose();
+          } catch {}
+        }
+      } catch (e) {
+        try {
+          renderer.dispose();
+        } catch {}
+      }
     };
-  }, []);
+  }, [characterId]);
 
   // Helper: set morph target by name across all morph meshes
   const setMorphValue = (name: string, value: number) => {
     for (const m of morphMeshesRef.current) {
-      const dict = m.morphTargetDictionary as Record<string, number> | undefined;
+      const dict = m.morphTargetDictionary as
+        | Record<string, number>
+        | undefined;
       const infl = m.morphTargetInfluences as number[] | undefined;
       if (dict && infl) {
         const idx = dict[name];
@@ -421,18 +537,38 @@ export default function Home() {
 
   const applyViseme = (viseme: Viseme) => {
     // Instead of setting influences instantly, set target values for smoothing in the render loop
-    const mouthOpenKeys = ["MouthOpen", "mouthOpen", "jawOpen", "JawOpen", "open", "Mouth_Open"];
+    const mouthOpenKeys = [
+      "MouthOpen",
+      "mouthOpen",
+      "jawOpen",
+      "JawOpen",
+      "open",
+      "Mouth_Open",
+    ];
     const smileKeys = ["Smile", "smile", "mouthSmile", "smile_big"];
 
-    const mouthValue = viseme === "closed" ? 0 : viseme === "wide" ? 0.6 : viseme === "open" ? 0.9 : viseme === "round" ? 0.8 : 0;
+    const mouthValue =
+      viseme === "closed"
+        ? 0
+        : viseme === "wide"
+        ? 0.6
+        : viseme === "open"
+        ? 0.9
+        : viseme === "round"
+        ? 0.8
+        : 0;
     const smileValue = viseme === "wide" ? 0.4 : 0;
 
     // Apply to morph target target map
-    for (const k of mouthOpenKeys) morphTargetTargetsRef.current[k] = mouthValue;
+    for (const k of mouthOpenKeys)
+      morphTargetTargetsRef.current[k] = mouthValue;
     for (const k of smileKeys) morphTargetTargetsRef.current[k] = smileValue;
 
     // If no morph targets exist, use jaw bone fallback: set target open amount
-    if ((!morphMeshesRef.current || morphMeshesRef.current.length === 0) && jawBoneRef.current) {
+    if (
+      (!morphMeshesRef.current || morphMeshesRef.current.length === 0) &&
+      jawBoneRef.current
+    ) {
       targetJawOpenRef.current = mouthValue; // will be interpolated in animation loop
     }
   };
@@ -458,7 +594,10 @@ export default function Home() {
         idx++;
       }
       if (idx < seq.length) visemeRAFRef.current = requestAnimationFrame(step);
-      else visemeRAFRef.current = requestAnimationFrame(() => applyViseme("neutral"));
+      else
+        visemeRAFRef.current = requestAnimationFrame(() =>
+          applyViseme("neutral")
+        );
     };
 
     visemeRAFRef.current = requestAnimationFrame(step);
@@ -492,7 +631,8 @@ export default function Home() {
             const dict = obj.morphTargetDictionary as Record<string, number>;
             const infl = obj.morphTargetInfluences as number[];
             if (expression === "happy") {
-              const s = dict["Smile"] ?? dict["smile"] ?? dict["mouthSmile"]; if (typeof s === "number") infl[s] = 1;
+              const s = dict["Smile"] ?? dict["smile"] ?? dict["mouthSmile"];
+              if (typeof s === "number") infl[s] = 1;
             } else if (expression === "thinking") {
               // subtle raise brows or similar if available
               const b = dict["BrowsUp"] ?? dict["browsUp"];
@@ -512,8 +652,15 @@ export default function Home() {
           if (obj.morphTargetDictionary && obj.morphTargetInfluences) {
             const dict = obj.morphTargetDictionary as Record<string, number>;
             const infl = obj.morphTargetInfluences as number[];
-            for (const k of ["Smile", "smile", "mouthSmile", "BrowsUp", "browsUp"]) {
-              const idx = dict[k]; if (typeof idx === "number") infl[idx] = 0;
+            for (const k of [
+              "Smile",
+              "smile",
+              "mouthSmile",
+              "BrowsUp",
+              "browsUp",
+            ]) {
+              const idx = dict[k];
+              if (typeof idx === "number") infl[idx] = 0;
             }
           }
         });
@@ -535,7 +682,8 @@ export default function Home() {
         // some servers put a stringified JSON in detail
         if (j.detail) {
           try {
-            const d = typeof j.detail === "string" ? JSON.parse(j.detail) : j.detail;
+            const d =
+              typeof j.detail === "string" ? JSON.parse(j.detail) : j.detail;
             msg = d.error?.message || d.message || msg;
           } catch (e) {
             // ignore parse error, keep original
@@ -549,7 +697,10 @@ export default function Home() {
         let msg = parsed.error || parsed.message || text;
         if (parsed.detail) {
           try {
-            const d = typeof parsed.detail === "string" ? JSON.parse(parsed.detail) : parsed.detail;
+            const d =
+              typeof parsed.detail === "string"
+                ? JSON.parse(parsed.detail)
+                : parsed.detail;
             msg = d.error?.message || d.message || msg;
           } catch {}
         }
@@ -566,14 +717,25 @@ export default function Home() {
     const messageToSend = overrideInput ?? input;
     if (!messageToSend) return;
 
-    const userMsg: Message = { id: Date.now().toString(), role: "user", text: messageToSend };
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      text: messageToSend,
+    };
     const charMsgId = (Date.now() + 1).toString();
 
-    setMessages((prev) => [...prev, userMsg, { id: charMsgId, role: "character", text: "", isStreaming: true }]);
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      { id: charMsgId, role: "character", text: "", isStreaming: true },
+    ]);
     setInput("");
     setLoading(true);
 
-    const history = messages.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }));
+    const history = messages.map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.text,
+    }));
 
     const maxRetries = 3;
     let attempt = 0;
@@ -584,13 +746,24 @@ export default function Home() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: messageToSend, characterId, history, speech: false }),
+          body: JSON.stringify({
+            prompt: messageToSend,
+            characterId,
+            history,
+            speech: false,
+          }),
         });
 
         if (res.ok) {
           const data = await res.json();
           const generatedText = data?.text || "Error: No text in response.";
-          setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: generatedText, isStreaming: false } : m));
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === charMsgId
+                ? { ...m, text: generatedText, isStreaming: false }
+                : m
+            )
+          );
           speakText(generatedText);
           setLoading(false);
           return;
@@ -601,66 +774,162 @@ export default function Home() {
         // If model is overloaded (503) we retry with backoff
         if (res.status === 503 && attempt < maxRetries) {
           const nextAttempt = attempt + 1;
-          setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Server busy — retrying (${nextAttempt}/${maxRetries})...`, isStreaming: true } : m));
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === charMsgId
+                ? {
+                    ...m,
+                    text: `Server busy — retrying (${nextAttempt}/${maxRetries})...`,
+                    isStreaming: true,
+                  }
+                : m
+            )
+          );
           await sleep(delays[attempt] ?? 2000);
           attempt = nextAttempt;
           continue; // retry
         }
 
         // Non-retriable or out of retries: surface error
-        setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Server error: ${serverMsg}`, isStreaming: false } : m));
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === charMsgId
+              ? { ...m, text: `Server error: ${serverMsg}`, isStreaming: false }
+              : m
+          )
+        );
         // Provide a spoken fallback so the experience isn't silent
-        speakText("Sorry, I'm having trouble right now. Please try again in a moment.");
+        speakText(
+          "Sorry, I'm having trouble right now. Please try again in a moment."
+        );
         setLoading(false);
         return;
       } catch (err) {
         console.error("Network/send error:", err);
         if (attempt < maxRetries) {
           const nextAttempt = attempt + 1;
-          setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: `Network error — retrying (${nextAttempt}/${maxRetries})...`, isStreaming: true } : m));
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === charMsgId
+                ? {
+                    ...m,
+                    text: `Network error — retrying (${nextAttempt}/${maxRetries})...`,
+                    isStreaming: true,
+                  }
+                : m
+            )
+          );
           await sleep(delays[attempt] ?? 2000);
           attempt = nextAttempt;
           continue;
         }
-        setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: "Error contacting server.", isStreaming: false } : m));
-        speakText("Sorry, I couldn't reach the server. Please check your connection and try again.");
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === charMsgId
+              ? { ...m, text: "Error contacting server.", isStreaming: false }
+              : m
+          )
+        );
+        speakText(
+          "Sorry, I couldn't reach the server. Please check your connection and try again."
+        );
         setLoading(false);
         return;
       }
     }
 
     // if we exit loop unexpectedly
-    setMessages((prev) => prev.map((m) => m.id === charMsgId ? { ...m, text: "Unexpected error.", isStreaming: false } : m));
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === charMsgId
+          ? { ...m, text: "Unexpected error.", isStreaming: false }
+          : m
+      )
+    );
     setLoading(false);
   };
 
   return (
-    <main style={{ width: "100vw", height: "100vh", margin: 0, padding: 0, overflow: "hidden", position: "relative" }}>
+    <main
+      style={{
+        width: "100vw",
+        height: "100vh",
+        margin: 0,
+        padding: 0,
+        overflow: "hidden",
+        position: "relative",
+      }}
+    >
       {/* Large Avatar area (full screen) */}
-      <div ref={mountRef} style={{ width: "100%", height: "100%", position: "absolute", inset: 0 }} />
+      <div
+        ref={mountRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          position: "absolute",
+          inset: 0,
+        }}
+      />
 
       {/* Small overlay UI for chat and controls prioritized to character */}
-      <div style={{ position: "absolute", right: 20, bottom: 20, width: 360, maxHeight: "70vh", background: "rgba(1, 0, 0, 0.85)", borderRadius: 12, padding: 12, boxShadow: "0 6px 20px rgba(0,0,0,0.25)", overflow: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+      <div
+        style={{
+          position: "absolute",
+          right: 20,
+          bottom: 20,
+          width: 360,
+          maxHeight: "70vh",
+          background: "rgba(1, 0, 0, 0.85)",
+          borderRadius: 12,
+          padding: 12,
+          boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
+          overflow: "auto",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 8,
+          }}
+        >
           <strong>BookTalk</strong>
           <select
             value={characterId}
-            onChange={(e) => { setCharacterId(e.target.value); setMessages([]); setInput(""); setLoading(false); }}
+            onChange={(e) => {
+              setCharacterId(e.target.value);
+              setMessages([]);
+              setInput("");
+              setLoading(false);
+            }}
             disabled={loading}
           >
-            {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {characters.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
           </select>
         </div>
 
-        {modelLoading && <div style={{ color: "#666" }}>Loading 3D model...</div>}
+        {modelLoading && (
+          <div style={{ color: "#666" }}>Loading 3D model...</div>
+        )}
         {modelError && <div style={{ color: "#b00" }}>{modelError}</div>}
 
-        <div className="chat-container" style={{ background: "transparent", border: "none", padding: 0 }}>
+        <div
+          className="chat-container"
+          style={{ background: "transparent", border: "none", padding: 0 }}
+        >
           {messages.map((m) => (
             <div key={m.id} className={`message ${m.role}`}>
               <div className="messageInner">
                 <strong className="messageLabel">
-                  {m.role === "user" ? "You" : characters.find((c) => c.id === characterId)?.name || "Character"}
+                  {m.role === "user"
+                    ? "You"
+                    : characters.find((c) => c.id === characterId)?.name ||
+                      "Character"}
                 </strong>
                 <div>{m.text}</div>
               </div>
@@ -668,28 +937,59 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="chat-controls" style={{ marginTop: 8, display: "flex", gap: 8 }}>
+        <div
+          className="chat-controls"
+          style={{ marginTop: 8, display: "flex", gap: 8 }}
+        >
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && send()}
             disabled={loading}
-            placeholder={`Talk to ${characters.find((c) => c.id === characterId)?.name || "the character"}...`}
+            placeholder={`Talk to ${
+              characters.find((c) => c.id === characterId)?.name ||
+              "the character"
+            }...`}
             style={{ flex: 1 }}
           />
-          <button onClick={() => send()} disabled={loading || !input}>Send</button>
-          <button onClick={startVoiceInput} disabled={loading}>🎤</button>
+          <button onClick={() => send()} disabled={loading || !input}>
+            Send
+          </button>
+          <button onClick={startVoiceInput} disabled={loading}>
+            🎤
+          </button>
         </div>
 
         {/* Morph sliders (if any) */}
         {!modelLoading && !modelError && morphTargets.length > 0 && (
           <div style={{ marginTop: 10 }}>
-            <strong style={{ display: "block", marginBottom: 6 }}>Expressions</strong>
+            <strong style={{ display: "block", marginBottom: 6 }}>
+              Expressions
+            </strong>
             {morphTargets.map((name) => (
-              <label key={name} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+              <label
+                key={name}
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  marginBottom: 6,
+                }}
+              >
                 <span style={{ minWidth: 100 }}>{name}</span>
-                <input type="range" min={0} max={1} step={0.01} defaultValue={0}
-                  onChange={(e) => setMorphValue(name, Number((e.target as HTMLInputElement).value))} />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  defaultValue={0}
+                  onChange={(e) =>
+                    setMorphValue(
+                      name,
+                      Number((e.target as HTMLInputElement).value)
+                    )
+                  }
+                />
               </label>
             ))}
           </div>
